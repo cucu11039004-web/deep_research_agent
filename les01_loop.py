@@ -49,6 +49,13 @@ MODEL = "deepseek-chat"  # 也可以用 deepseek-reasoner，但慢且贵
 #         # 关键：工具出错也要返回字符串给 LLM，让它知道并尝试修正
 #         return f"Error: {e}"
 
+def get_current_time() -> str:
+    """
+    工具实现：获取当前时间。
+    """
+    from datetime import datetime
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 def calculator(expression: str) -> str:
     """
     工具实现：算一个数学表达式。
@@ -67,14 +74,6 @@ def calculator(expression: str) -> str:
     except Exception as e:
         # 关键：工具出错也要返回字符串给 LLM，让它知道并尝试修正
         return f"Error: {e}"
-
-
-def get_current_time() -> str:
-    """
-    工具实现：返回当前本机时间。
-    这里不接收参数，保持 lesson 01 的工具形状尽量简单。
-    """
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 # 工具的"声明"。这就是 OpenAI/DeepSeek 的 function calling 格式。
@@ -97,6 +96,7 @@ TOOLS_SCHEMA = [
             },
         },
     },
+
     {
         "type": "function",
         "function": {
@@ -191,6 +191,7 @@ if __name__ == "__main__":
     # query = "What is the square root of (23 * 47 + 891)? Show me the steps."
     # query = "hello"
     # query = "23 * 47 是多少？" 
-    query = "sqrt(1972)是多少？"
+    # query = "sqrt(1972)是多少？"
+    query = "现在是几点？再算一下从现在到2027年元旦还有多少天？"
     answer = run_agent(query)
     print(f"\n{'='*60}\nFINAL: {answer}")
