@@ -7,6 +7,7 @@
 import os
 import json
 import math
+from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -33,20 +34,47 @@ MODEL = "deepseek-chat"  # 也可以用 deepseek-reasoner，但慢且贵
 # LLM 看不到 Python 函数，它只看 JSON Schema。
 # 第 2 课会深入讲这个 contract，本课先用着。
 
+# def calculator(expression: str) -> str:
+#     """
+#     工具实现：算一个数学表达式。
+#     用 eval 是不安全的（生产环境绝对不能这么干），但教学够用。
+#     我们限制了允许的名字空间到 math 模块，稍微减少一点风险。
+#     """
+#     try:
+#         # 只允许 math 模块的函数 + 基础运算
+#         allowed = {k: v for k, v in math.__dict__.items() if not k.startswith("_")}
+#         result = eval(expression, {"__builtins__": {}}, allowed)
+#         return str(result)
+#     except Exception as e:
+#         # 关键：工具出错也要返回字符串给 LLM，让它知道并尝试修正
+#         return f"Error: {e}"
+
 def calculator(expression: str) -> str:
     """
     工具实现：算一个数学表达式。
     用 eval 是不安全的（生产环境绝对不能这么干），但教学够用。
     我们限制了允许的名字空间到 math 模块，稍微减少一点风险。
     """
+    
     try:
+        if "sqrt" in expression:
+            return "Error: sqrt() is not supported. Use ** 0.5 instead, e.g. '4 ** 0.5' for sqrt(4)."
         # 只允许 math 模块的函数 + 基础运算
-        allowed = {k: v for k, v in math.__dict__.items() if not k.startswith("_")}
-        result = eval(expression, {"__builtins__": {}}, allowed)
-        return str(result)
+        else:
+            allowed = {k: v for k, v in math.__dict__.items() if not k.startswith("_")}
+            result = eval(expression, {"__builtins__": {}}, allowed)
+            return str(result)
     except Exception as e:
         # 关键：工具出错也要返回字符串给 LLM，让它知道并尝试修正
         return f"Error: {e}"
+
+
+def get_current_time() -> str:
+    """
+    工具实现：返回当前本机时间。
+    这里不接收参数，保持 lesson 01 的工具形状尽量简单。
+    """
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 # 工具的"声明"。这就是 OpenAI/DeepSeek 的 function calling 格式。
@@ -69,11 +97,24 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "Get the current local date and time.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 # 名字 → 实现 的映射，dispatch 时用
 TOOL_IMPL = {
     "calculator": calculator,
+    "get_current_time": get_current_time,
 }
 
 
@@ -102,7 +143,7 @@ def run_agent(user_query: str, max_steps: int = 10) -> str:
             model=MODEL,
             messages=messages,
             tools=TOOLS_SCHEMA,  # ★ 关键：把工具声明传进去
-            tool_choice="auto",   # 让模型自己决定是否调用工具
+            tool_choice="auto",   # 让模型自己决定是否调用工具，required：强制调用工具，none：不调用工具
         )
         msg = response.choices[0].message
 
@@ -113,6 +154,7 @@ def run_agent(user_query: str, max_steps: int = 10) -> str:
         # ---- (3) 判断：模型说要调工具，还是给最终答案？ ----
         if not msg.tool_calls:
             # 没有工具调用 → 模型认为已经能回答了 → 退出循环
+            print(f"[Step {step+1}] LLM decided to STOP. No tool_calls in response.") # 尝试
             print(f"[Final Answer] {msg.content}")
             return msg.content
 
@@ -146,6 +188,9 @@ def run_agent(user_query: str, max_steps: int = 10) -> str:
 # 4. 试跑
 # ============================================================
 if __name__ == "__main__":
-    query = "What is the square root of (23 * 47 + 891)? Show me the steps."
+    # query = "What is the square root of (23 * 47 + 891)? Show me the steps."
+    # query = "hello"
+    # query = "23 * 47 是多少？" 
+    query = "sqrt(1972)是多少？"
     answer = run_agent(query)
     print(f"\n{'='*60}\nFINAL: {answer}")
