@@ -2,3 +2,7 @@ openai
 httpx
 python-dotenv
 rich
+tavily-python
+readability-lxml
+lxml_html_clean
+PyPDF2
