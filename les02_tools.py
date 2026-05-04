@@ -21,7 +21,7 @@ client = OpenAI(
     api_key=os.environ["DEEPSEEK_API_KEY"],
     base_url="https://api.deepseek.com",
 )
-MODEL = "deepseek-chat"
+MODEL = "deepseek-v4-flash" # deepseek-v4-flash deepseek-chat
 
 tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
@@ -74,39 +74,29 @@ def web_search(query: str, max_results: int = 5) -> str:
 
 
 def fetch_url(url: str, max_chars: int = 4000) -> str:
-    """
-    抓一个 URL 的正文。
-    
-    设计选择 1：用 readability-lxml 抽正文，不返回原始 HTML。
-    HTML 里 90% 是导航、广告、样式 —— 模型不需要。
-    readability 是 Mozilla 那个"阅读模式"的 Python 实现。
-    
-    设计选择 2：max_chars 默认 4000。
-    粗略估算：4000 字符 ≈ 1000 token ≈ 一篇短文的核心内容。
-    长文超出部分截断 + 提示模型"内容被截断"。
-    
-    设计选择 3：明确 timeout，10 秒。
-    没 timeout 的工具会让 agent 卡死，是常见 bug。
-    """
     try:
-        response = httpx.get(
-            url,
-            timeout=10.0,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; DeepResearchAgent/0.1)"},
-        )
+        response = httpx.get(url, timeout=10.0, follow_redirects=True,
+                            headers={"User-Agent": "Mozilla/5.0 (compatible; DeepResearchAgent/0.1)"})
         response.raise_for_status()
         
-        # 抽正文
         doc = Document(response.text)
         title = doc.title()
-        # short_title() 会去除站点名后缀，更干净
         content = doc.summary(html_partial=True)
         
-        # 简单去 HTML 标签（生产应该用 BeautifulSoup，这里够用）
         import re
         text = re.sub(r"<[^>]+>", " ", content)
         text = re.sub(r"\s+", " ", text).strip()
+        
+        # ★ 新增：质量检查
+        if len(text) < 200:
+            return (
+                f"Warning: extracted content from {url} is suspiciously short "
+                f"({len(text)} chars). This is likely a JavaScript-rendered page (SPA), "
+                f"a paywall, or a navigation page with no real article content. "
+                f"Try a different URL — preferably a direct article/blog post URL, "
+                f"not a homepage or index page.\n\n"
+                f"Extracted content was: {text!r}"
+            )
         
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n\n[Content truncated at {max_chars} chars]"
@@ -361,5 +351,6 @@ if __name__ == "__main__":
     query = "Anthropic 最新模型是什么"
     # query = "对比 DeepSeek R1、Qwen3、Claude Opus 4.7 在编程任务上的最新表现，给出引用"
     # query = "看一下 https://arxiv.org/pdf/2510.23059.pdf 这篇论文，告诉我它的主要贡献"
+    query = "最近一年 VLA 模型有什么进展"
     answer = run_agent(query)
     print(f"\n{'='*60}\nFINAL:\n{answer}")
