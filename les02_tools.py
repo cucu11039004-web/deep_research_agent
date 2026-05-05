@@ -352,5 +352,7 @@ if __name__ == "__main__":
     # query = "对比 DeepSeek R1、Qwen3、Claude Opus 4.7 在编程任务上的最新表现，给出引用"
     # query = "看一下 https://arxiv.org/pdf/2510.23059.pdf 这篇论文，告诉我它的主要贡献"
     query = "最近一年 VLA 模型有什么进展"
+    query = "对比 DeepSeek R1、Qwen3、Claude Opus 4.7 在编程任务上的最新表现"
+
     answer = run_agent(query)
     print(f"\n{'='*60}\nFINAL:\n{answer}")
