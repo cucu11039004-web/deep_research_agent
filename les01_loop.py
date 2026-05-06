@@ -18,11 +18,23 @@ load_dotenv()
 # ============================================================
 # DeepSeek 兼容 OpenAI 的 API 格式，所以直接用 openai 库即可。
 # 这是 2025 年的事实标准——绝大多数 LLM 提供商都兼容 OpenAI API。
+# client = OpenAI(
+#     api_key=os.environ["DEEPSEEK_API_KEY"],
+#     base_url="https://api.deepseek.com",
+# )
+# MODEL = "deepseek-chat"  # 也可以用 deepseek-reasoner，但慢且贵
+
+# client = OpenAI(
+#     api_key=os.environ["MINIMAX_API_KEY"],
+#     base_url="https://api.minimaxi.com/v1",
+# )
+# MODEL = "MiniMax-M2.7" # MiniMax-M2.7
+
 client = OpenAI(
-    api_key=os.environ["DEEPSEEK_API_KEY"],
-    base_url="https://api.deepseek.com",
+    api_key=os.environ["GLM_API_KEY"],
+    base_url="https://open.bigmodel.cn/api/paas/v4/",
 )
-MODEL = "deepseek-chat"  # 也可以用 deepseek-reasoner，但慢且贵
+MODEL = "glm-5.1" # glm-5.1
 
 
 # ============================================================

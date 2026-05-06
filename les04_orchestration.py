@@ -17,11 +17,24 @@ from readability import Document
 load_dotenv()
 
 # ★ 用异步客户端
+# client = AsyncOpenAI(
+#     api_key=os.environ["DEEPSEEK_API_KEY"],
+#     base_url="https://api.deepseek.com",
+# )
+# MODEL = "deepseek-v4-pro" # deepseek-v4-flash deepseek-chat
+
+# client = AsyncOpenAI(
+#     api_key=os.environ["MINIMAX_API_KEY"],
+#     base_url="https://api.minimaxi.com/v1",
+# )
+# MODEL = "MiniMax-M2.7" # MiniMax-M2.7
+
 client = AsyncOpenAI(
-    api_key=os.environ["DEEPSEEK_API_KEY"],
-    base_url="https://api.deepseek.com",
+    api_key=os.environ["GLM_API_KEY"],
+    base_url="https://open.bigmodel.cn/api/paas/v4/",
 )
-MODEL = "deepseek-v4-pro" # deepseek-v4-flash deepseek-chat
+MODEL = "glm-5.1" # glm-5.1
+
 tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 
@@ -318,7 +331,7 @@ Now write the final report. Remember: use ONLY information from these notes.
             {"role": "system", "content": WRITER_SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
-        temperature=0.3,
+        # temperature=0.3,
     )
     return response.choices[0].message.content
 
