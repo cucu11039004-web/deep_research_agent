@@ -264,7 +264,25 @@ async def run_researcher(sub_question: str, max_steps: int = 8) -> str:
                 "content": result,
             })
 
-    return f"[Researcher reached max_steps={max_steps} on: {sub_question}]"
+    # ★ max_steps 用尽时强制封笔:让模型把 messages 里的事实压缩成 note,
+    # 否则 sub-agent 内部的工具产出会全部蒸发。
+    messages.append({
+        "role": "user",
+        "content": (
+            "You have used your full search budget. Based ONLY on the tool "
+            "results already in this conversation, write the final note now "
+            "in the required format (ANSWER:/KEY_FACTS:/LIMITATIONS:). Do not "
+            "call any tools. If the information is genuinely insufficient, "
+            "say so clearly in LIMITATIONS rather than refusing to answer."
+        ),
+    })
+    closing = await client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        tool_choice="none",
+        temperature=0.3,
+    )
+    return closing.choices[0].message.content
 
 
 # ============================================================
