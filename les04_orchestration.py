@@ -245,8 +245,7 @@ async def run_researcher(sub_question: str, max_steps: int = 8) -> str:
         messages.append(msg.model_dump(exclude_none=True))
 
         if not msg.tool_calls:
-            # 模型给出最终 note,直接返回
-            return msg.content
+            return msg.content # 模型出口1： 模型给出最终 note,直接返回
 
         # 并发执行多个 tool call (DeepSeek 支持一次返回多个 tool_calls)
         tool_tasks = []
@@ -264,25 +263,52 @@ async def run_researcher(sub_question: str, max_steps: int = 8) -> str:
                 "content": result,
             })
 
-    # ★ max_steps 用尽时强制封笔:让模型把 messages 里的事实压缩成 note,
-    # 否则 sub-agent 内部的工具产出会全部蒸发。
+    # 模型出口2：超过 max_steps 后，强制做一次不带 tools 的 finalization。
+    # 这样仍然保持 context isolation：主流程只拿到压缩 note，看不到内部 messages。
     messages.append({
+
         "role": "user",
-        "content": (
-            "You have used your full search budget. Based ONLY on the tool "
-            "results already in this conversation, write the final note now "
-            "in the required format (ANSWER:/KEY_FACTS:/LIMITATIONS:). Do not "
-            "call any tools. If the information is genuinely insufficient, "
-            "say so clearly in LIMITATIONS rather than refusing to answer."
-        ),
-    })
-    closing = await client.chat.completions.create(
-        model=MODEL,
-        messages=messages,
-        tool_choice="none",
-        temperature=0.3,
-    )
-    return closing.choices[0].message.content
+        "content": f"""\
+                    You have reached max_steps={max_steps} for this sub-question:
+
+                    {sub_question}
+
+                    Now stop using tools and produce the best possible final research note
+                    based ONLY on the search/fetch results already present in this conversation.
+                    Do NOT invent missing facts or sources.
+
+                    Your response MUST follow this exact format:
+
+                    ANSWER: <one or two sentences directly answering the sub-question, or say if evidence is insufficient>
+                    KEY_FACTS:
+                    - <fact 1> [source: <url>]
+                    - <fact 2> [source: <url>]
+                    LIMITATIONS: Mention that this note was forced because the researcher reached max_steps={max_steps}, and state what remains uncertain.
+                    """,
+                        })
+
+    try:
+        response = await client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            temperature=0.2,
+        )
+        final_note = response.choices[0].message.content
+        if final_note:
+            return final_note
+        return (
+            "ANSWER: Unable to produce a complete answer from the available research trace.\n"
+            "KEY_FACTS:\n"
+            "- No reliable final note was produced. [source: unavailable]\n"
+            f"LIMITATIONS: Researcher reached max_steps={max_steps}, and finalization returned empty content."
+        )
+    except Exception as e:
+        return (
+            "ANSWER: Unable to produce a complete answer from the available research trace.\n"
+            "KEY_FACTS:\n"
+            "- No reliable final note was produced. [source: unavailable]\n"
+            f"LIMITATIONS: Researcher reached max_steps={max_steps}, and finalization failed: {e}"
+        )
 
 
 # ============================================================
