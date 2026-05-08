@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from tavily import TavilyClient
 import httpx
 from readability import Document
+from tracer import tracer  # ★ trace
+import time
 
 load_dotenv()
 
@@ -33,7 +35,7 @@ client = AsyncOpenAI(
     api_key=os.environ["GLM_API_KEY"],
     base_url="https://open.bigmodel.cn/api/paas/v4/",
 )
-MODEL = "glm-5.1" # glm-5.1
+MODEL = "glm-5.1" # glm-5.1 glm-4.7
 
 tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
@@ -129,20 +131,43 @@ RESEARCHER_TOOLS_SCHEMA = [
     },
 ]
 
-# 异步 dispatch
-async def dispatch_tool(name: str, args: dict) -> str:
+
+# ============================================================
+# # 异步 Tool dispatch + ★ trace 插桩
+# ============================================================
+async def dispatch_tool(name: str, args: dict, researcher_id: str = "main") -> str:
+    """每次工具调用都记 trace。"""
+    t0 = time.time()  # ★ trace
+
     if name == "web_search":
-        return web_search(**args)  # 同步函数,直接调
+        result = web_search(**args)  # 同步函数,直接调
     elif name == "fetch_url":
-        return await fetch_url(**args)  # 异步函数,await
+        result = await fetch_url(**args)  # 异步函数,await
     elif name == "calculator":
-        return calculator(**args)
+        result = calculator(**args)
     else:
-        return f"Error: unknown tool '{name}'"
+        result = f"Error: unknown tool '{name}'"
+    
+    duration_ms = int((time.time() - t0) * 1000)  # ★ trace
+
+    # ★ trace: 记 tool 调用结果
+    tracer.log(
+        "tool_result",
+        researcher_id=researcher_id,
+        tool=name,
+        args=args,
+        result_chars=len(result),
+        result_preview=result[:200].replace("\n", " "),
+        is_warning=result.startswith("Warning:"),
+        is_error=result.startswith("Error:"),
+        duration_ms=duration_ms,
+    )
+
+    return result
 
 
 # ============================================================
-# 2. Planner (第 3 课的,基本没变,只是改成 async)
+# 2. Planner +  ★ trace
 # ============================================================
 
 PLANNER_SYSTEM_PROMPT = """\
@@ -171,6 +196,7 @@ No markdown, no code blocks, no extra text.
 
 
 async def plan(user_query: str) -> dict:
+    t0 = time.time()  # ★ trace
     response = await client.chat.completions.create(
         model=MODEL,
         messages=[
@@ -180,11 +206,21 @@ async def plan(user_query: str) -> dict:
         response_format={"type": "json_object"},
         temperature=0.3,
     )
-    return json.loads(response.choices[0].message.content)
+    plan_result = json.loads(response.choices[0].message.content)
+
+    # ★ trace
+    tracer.log(
+        "plan",
+        reasoning=plan_result["reasoning"],
+        sub_questions=plan_result["sub_questions"],
+        n_sub_questions=len(plan_result["sub_questions"]),
+        duration_ms=int((time.time() - t0) * 1000),
+    )
+    return plan_result
 
 
 # ============================================================
-# 3. ★ Sub-Agent: Researcher
+# Researcher + ★ trace 插桩 + forced closure 修复
 # ============================================================
 
 RESEARCHER_SYSTEM_PROMPT = """\
@@ -220,20 +256,26 @@ Be brief. The note will be one of several merged into a final report.
 """
 
 
-async def run_researcher(sub_question: str, max_steps: int = 8) -> str:
+async def run_researcher(sub_question: str, researcher_id: str, max_steps: int = 8) -> str:
     """
     一个完整的 sub-agent loop。
     返回的是浓缩后的 note(几百字),不是完整 messages。
     
     ★★ 这是 context isolation 的关键 ★★
     主流程拿到的是这个 return value,看不到内部 messages。
+    ★ trace 在每个关键点都打了点。
     """
+    
+    t0 = time.time()  # ★ trace
+    tracer.log("researcher_start", researcher_id=researcher_id, sub_q=sub_question)  # ★ trace
+    
     messages = [
         {"role": "system", "content": RESEARCHER_SYSTEM_PROMPT},
         {"role": "user", "content": f"Sub-question: {sub_question}"},
     ]
 
     for step in range(max_steps):
+        llm_t0 = time.time()  # ★ trace
         response = await client.chat.completions.create(
             model=MODEL,
             messages=messages,
@@ -244,7 +286,28 @@ async def run_researcher(sub_question: str, max_steps: int = 8) -> str:
         msg = response.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))
 
+        # ★ trace: 每次 LLM 调用都记
+        tracer.log(
+            "llm_call",
+            researcher_id=researcher_id,
+            step=step + 1,
+            n_tool_calls=len(msg.tool_calls) if msg.tool_calls else 0,
+            stopped=not msg.tool_calls,
+            duration_ms=int((time.time() - llm_t0) * 1000),
+            input_tokens=response.usage.prompt_tokens if response.usage else None,
+            output_tokens=response.usage.completion_tokens if response.usage else None,
+        )
+
         if not msg.tool_calls:
+            # 正常收尾
+            tracer.log(  # ★ trace
+                "researcher_end",
+                researcher_id=researcher_id,
+                steps_used=step + 1,
+                exit_reason="natural",
+                note_chars=len(msg.content or ""),
+                duration_ms=int((time.time() - t0) * 1000),
+            )
             # 模型给出最终 note,直接返回
             return msg.content
 
@@ -266,6 +329,7 @@ async def run_researcher(sub_question: str, max_steps: int = 8) -> str:
 
     # ★ max_steps 用尽时强制封笔:让模型把 messages 里的事实压缩成 note,
     # 否则 sub-agent 内部的工具产出会全部蒸发。
+    tracer.log("forced_closure_triggered", researcher_id=researcher_id)  # ★ trace
     print(f"  [researcher on '{sub_question[:40]}...' hit max_steps, forcing closure]")
     messages.append({
         "role": "user",
@@ -283,11 +347,22 @@ async def run_researcher(sub_question: str, max_steps: int = 8) -> str:
         tool_choice="none",
         temperature=0.3,
     )
-    return closing.choices[0].message.content
+    note = closing.choices[0].message.content
+
+    # ★ trace
+    tracer.log(
+        "researcher_end",
+        researcher_id=researcher_id,
+        steps_used=max_steps,
+        exit_reason="forced_closure",
+        note_chars=len(note),
+        duration_ms=int((time.time() - t0) * 1000),
+    )
+    return note
 
 
 # ============================================================
-# 4. ★ Writer: 综合 N 个 note 成最终报告
+# Writer + ★ trace
 # ============================================================
 
 WRITER_SYSTEM_PROMPT = """\
@@ -326,23 +401,24 @@ async def write_report(user_query: str, plan_result: dict, notes: list[str]) -> 
     """
     把 N 段 note + 原始 query + plan 喂给 writer,产出最终报告。
     """
-    # 把 sub-question 和对应的 note 配对呈现
+    t0 = time.time()  # ★ trace
+
     research_block = "\n\n---\n\n".join(
         f"## Research on: {q}\n\n{note}"
         for q, note in zip(plan_result["sub_questions"], notes)
     )
     
     user_message = f"""\
-Original question: {user_query}
+                    Original question: {user_query}
 
-Planner's decomposition: {plan_result['reasoning']}
+                    Planner's decomposition: {plan_result['reasoning']}
 
-Research notes from sub-agents:
+                    Research notes from sub-agents:
 
-{research_block}
+                    {research_block}
 
-Now write the final report. Remember: use ONLY information from these notes.
-"""
+                    Now write the final report. Remember: use ONLY information from these notes.
+                    """
     
     response = await client.chat.completions.create(
         model=MODEL,
@@ -352,11 +428,18 @@ Now write the final report. Remember: use ONLY information from these notes.
         ],
         # temperature=0.3,
     )
-    return response.choices[0].message.content
+    report = response.choices[0].message.content
+
+    tracer.log(  # ★ trace
+        "writer_done",
+        report_chars=len(report),
+        duration_ms=int((time.time() - t0) * 1000),
+    )
+    return report
 
 
 # ============================================================
-# 5. ★★★ Orchestrator: 把整个流水线串起来
+# Orchestrator + ★ trace 包住整个 run
 # ============================================================
 
 async def deep_research(user_query: str) -> str:
@@ -364,35 +447,21 @@ async def deep_research(user_query: str) -> str:
     完整的 deep research pipeline:
       planner → N 个并发 researcher → writer
     """
-    print(f"\n{'='*70}")
-    print(f"USER QUERY: {user_query}")
-    print(f"{'='*70}")
-    
-    # ---- Phase 1: Planning ----
-    print("\n[PHASE 1] Planning...")
-    plan_result = await plan(user_query)
-    print(f"  Reasoning: {plan_result['reasoning']}")
-    print(f"  Decomposed into {len(plan_result['sub_questions'])} sub-questions:")
-    for i, sq in enumerate(plan_result["sub_questions"], 1):
-        print(f"    {i}. {sq}")
-    
-    # ---- Phase 2: Concurrent Research ----
-    print(f"\n[PHASE 2] Researching {len(plan_result['sub_questions'])} sub-questions concurrently...")
-    
-    # ★ 并发的核心: asyncio.gather
-    # 同时启动 N 个 researcher,等所有都完成
-    notes = await asyncio.gather(*[
-        run_researcher(sq) for sq in plan_result["sub_questions"]
-    ])
-    
-    print(f"  All {len(notes)} researchers completed.")
-    for i, note in enumerate(notes, 1):
-        preview = note[:120].replace("\n", " ")
-        print(f"  Note {i} preview: {preview}...")
-    
-    # ---- Phase 3: Synthesis ----
-    print("\n[PHASE 3] Writing final report...")
-    report = await write_report(user_query, plan_result, notes)
+    run_id = tracer.start_run(query=user_query)  # ★ trace
+    print(f"\n[run {run_id}] {user_query}")
+
+    try:
+        plan_result = await plan(user_query)
+        print(f"  Decomposed into {len(plan_result['sub_questions'])} sub-questions")
+        
+        notes = await asyncio.gather(*[
+            run_researcher(sq, researcher_id=f"r{i+1}")
+            for i, sq in enumerate(plan_result["sub_questions"])
+        ])
+        
+        report = await write_report(user_query, plan_result, notes)
+    finally:
+        tracer.end_run(report_chars=len(report) if 'report' in dir() else 0)  # ★ trace
     
     return report
 
@@ -402,11 +471,13 @@ async def deep_research(user_query: str) -> str:
 # ============================================================
 
 if __name__ == "__main__":
-    query = "对比 DeepSeek R1、Qwen3、Claude Opus 4.7 在编程任务上的最新表现"
-    # query = "Anthropic 最新模型是什么"  # 简单的也能跑,只是 sub_questions 会少
-    # query = "VLA 模型 2024-2026 的主要进展和代表工作有哪些"
-    query = "调研一下 2026 年 agent harness 的设计哲学"
+    # query = "Anthropic 最新模型是什么"  # 简单
+    # query = "DeepSeek R1 和 V3 的主要区别"  # 中等
+    # query = "对比 DeepSeek R1、Qwen3、Claude Opus 4.7 在编程任务上的最新表现" # 复杂
+    # query = "为什么 Mamba 在长序列上比 Transformer 高效"   # 深度
+    query = "VLA 模型 2024-2026 主要进展和代表工作"  # 你的领域
+    # query = "调研一下 2026 年 agent harness 的设计哲学"
     
     report = asyncio.run(deep_research(query))
-    print(f"\n{'='*70}\nFINAL REPORT\n{'='*70}\n")
-    print(report)
+    print(f"\n{'='*70}\nFINAL REPORT\n{'='*70}\n{report}")
+    print(f"\n[trace saved to runs/]")
